@@ -1,14 +1,16 @@
 package controllers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
 	"github.com/yeremiapane/restaurant-app/models"
 	"github.com/yeremiapane/restaurant-app/utils"
-	"gorm.io/gorm"
 )
 
 type PaymentController struct {
@@ -29,11 +31,11 @@ func (pc *PaymentController) GetAllPayments(c *gin.Context) {
 	utils.RespondJSON(c, http.StatusOK, "All payments", payments)
 }
 
-// CreatePayment -> Contoh membayar order
+// CreatePayment -> Memproses pembayaran => auto set order => 'paid'
 func (pc *PaymentController) CreatePayment(c *gin.Context) {
 	type reqBody struct {
 		OrderID       uint    `json:"order_id" binding:"required"`
-		PaymentMethod string  `json:"payment_method" binding:"required"` // cash, qris, dsb.
+		PaymentMethod string  `json:"payment_method" binding:"required"` // cash, qris, dll
 		Amount        float64 `json:"amount" binding:"required"`
 	}
 
@@ -43,37 +45,39 @@ func (pc *PaymentController) CreatePayment(c *gin.Context) {
 		return
 	}
 
-	// Pastikan order ada
+	// Cek order
 	var order models.Order
 	if err := pc.DB.First(&order, body.OrderID).Error; err != nil {
-		utils.RespondError(c, http.StatusNotFound, err)
+		utils.RespondError(c, http.StatusNotFound, fmt.Errorf("order not found"))
 		return
 	}
 
-	// Buat payment record, status default 'pending'
+	// Buat payment => status 'pending'
 	payment := models.Payment{
 		OrderID:       body.OrderID,
 		PaymentMethod: body.PaymentMethod,
 		Status:        "pending",
 		Amount:        body.Amount,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
-
 	if err := pc.DB.Create(&payment).Error; err != nil {
 		utils.RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	// Misalkan kita anggap pembayaran "langsung sukses"
+	// Misal: kita anggap langsung "success"
 	now := time.Now()
 	payment.Status = "success"
 	payment.PaymentTime = &now
 	pc.DB.Save(&payment)
 
-	// Update order status => "paid"
+	// Update order => paid
 	order.Status = "paid"
+	order.UpdatedAt = time.Now()
 	pc.DB.Save(&order)
 
-	utils.RespondJSON(c, http.StatusCreated, "Payment success", payment)
+	utils.RespondJSON(c, http.StatusCreated, "Payment success => order paid", payment)
 }
 
 // GetPaymentByID
@@ -99,6 +103,5 @@ func (pc *PaymentController) DeletePayment(c *gin.Context) {
 		utils.RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-
 	utils.RespondJSON(c, http.StatusOK, "Payment deleted", gin.H{"payment_id": id})
 }
