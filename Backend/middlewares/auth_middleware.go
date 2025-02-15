@@ -26,7 +26,6 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// ✅ Prevent panic if claims is nil
 		if claims.UserID == 0 {
 			utils.RespondError(c, http.StatusUnauthorized, errors.New("Invalid user ID in token"))
 			c.Abort()

@@ -55,7 +55,7 @@ func (oc *OrderController) CreateOrder(c *gin.Context) {
 	// Buat order => 'draft'
 	order := models.Order{
 		CustomerID:  body.CustomerID,
-		Status:      "draft",
+		Status:      "pending_payment",
 		TotalAmount: 0,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
