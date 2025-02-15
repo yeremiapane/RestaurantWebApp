@@ -1,36 +1,43 @@
 package middlewares
 
 import (
+	"errors"
 	"github.com/gin-gonic/gin"
 	"github.com/yeremiapane/restaurant-app/utils"
+	"log"
 	"net/http"
 	"strings"
 )
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Ambil Authorization Header: "Bearer <token>"
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "No token provided"})
+			utils.RespondError(c, http.StatusUnauthorized, errors.New("Authorization header missing"))
+			c.Abort()
 			return
 		}
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token provided"})
-			return
-		}
-		tokenString := parts[1]
+
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		claims, err := utils.ParseToken(tokenString)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		if err != nil || claims == nil {
+			utils.RespondError(c, http.StatusUnauthorized, errors.New("Invalid or expired token"))
+			c.Abort()
 			return
 		}
+
+		// ✅ Prevent panic if claims is nil
+		if claims.UserID == 0 {
+			utils.RespondError(c, http.StatusUnauthorized, errors.New("Invalid user ID in token"))
+			c.Abort()
+			return
+		}
+
+		log.Printf("Decoded Claims: %+v\n", claims)
 
 		c.Set("userID", claims.UserID)
 		c.Set("role", claims.Role)
 
-		//lanjut
 		c.Next()
 	}
 }

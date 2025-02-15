@@ -104,6 +104,7 @@ func (oc *OrderController) GetOrderByID(c *gin.Context) {
 	id, _ := strconv.Atoi(idStr)
 
 	var order models.Order
+	fmt.Printf("Order %d has %d items\n", order.ID, len(order.OrderItems))
 	// preload items
 	if err := oc.DB.Preload("OrderItems").First(&order, id).Error; err != nil {
 		utils.RespondError(c, http.StatusNotFound, err)

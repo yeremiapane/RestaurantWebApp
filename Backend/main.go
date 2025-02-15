@@ -2,20 +2,19 @@ package main
 
 import (
 	_ "fmt"
-	"log"
-	"os"
-
 	"github.com/joho/godotenv"
 	"github.com/yeremiapane/restaurant-app/config"
 	"github.com/yeremiapane/restaurant-app/models"
 	"github.com/yeremiapane/restaurant-app/router"
 	"github.com/yeremiapane/restaurant-app/utils"
 	"gorm.io/gorm"
+	"log"
+	"os"
 )
 
 func main() {
 	godotenv.Load() // load file .env jika ada
-
+	
 	// Init logger
 	utils.InitLogger()
 	utils.InfoLogger.Println("Starting Restaurant App...")

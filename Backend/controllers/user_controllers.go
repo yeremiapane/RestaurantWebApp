@@ -1,12 +1,16 @@
 package controllers
 
 import (
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/yeremiapane/restaurant-app/models"
 	"github.com/yeremiapane/restaurant-app/utils"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
-	"net/http"
 )
 
 type UserController struct {
@@ -59,36 +63,46 @@ func (uc *UserController) Register(c *gin.Context) {
 
 // Login user -> return JWT
 func (uc *UserController) Login(c *gin.Context) {
-	type request struct {
+	fmt.Println("InfoLogger is nil:", utils.InfoLogger == nil)
+	fmt.Println("ErrorLogger is nil:", utils.ErrorLogger == nil)
+
+	var input struct {
 		Email    string `json:"email" binding:"required"`
 		Password string `json:"password" binding:"required"`
 	}
-	var req request
-	if err := c.ShouldBindJSON(&req); err != nil {
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		utils.InfoLogger.Errorf("Login: invalid input: %v", err)
 		utils.RespondError(c, http.StatusBadRequest, err)
 		return
 	}
 
+	if utils.InfoLogger == nil {
+		log.Println("WARNING: Logger is nil! Initializing logger.")
+		utils.InitLogger()
+	}
+
 	var user models.User
-	if err := uc.DB.Where("email = ?", req.Email).First(&user).Error; err != nil {
-		utils.RespondError(c, http.StatusUnauthorized, err)
+	if err := uc.DB.Where("email = ?", input.Email).First(&user).Error; err != nil {
+		utils.InfoLogger.Errorf("Login failed: User not found: %s", input.Email)
+		utils.RespondError(c, http.StatusUnauthorized, errors.New("Invalid credentials"))
 		return
 	}
 
-	// Check password
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
-		utils.RespondError(c, http.StatusUnauthorized, err)
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
+		utils.InfoLogger.Errorf("Login failed: Password mismatch for user %s", input.Email)
+		utils.RespondError(c, http.StatusUnauthorized, errors.New("Invalid credentials"))
 		return
 	}
 
-	// Generate token
 	token, err := utils.GenerateToken(user.ID, user.Role)
 	if err != nil {
-		utils.RespondError(c, http.StatusInternalServerError, err)
+		utils.InfoLogger.Errorf("Token generation failed for user %s: %v", input.Email, err)
+		utils.RespondError(c, http.StatusInternalServerError, errors.New("Failed to generate token"))
 		return
 	}
 
-	utils.InfoLogger.Printf("User login: %s (role=%s)", user.Email, user.Role)
+	utils.InfoLogger.Infof("User login success: %s (role=%s)", user.Email, user.Role)
 
 	utils.RespondJSON(c, http.StatusOK, "Login success", gin.H{
 		"token": token,

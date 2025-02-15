@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"errors"
 	"github.com/golang-jwt/jwt/v5"
 	"os"
 	"time"
@@ -30,16 +31,18 @@ func GenerateToken(userID uint, role string) (string, error) {
 }
 
 func ParseToken(tokenString string) (*CustomClaims, error) {
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		return JWTSecret, nil
+	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return []byte(os.Getenv("JWT_SECRET")), nil
 	})
-	if err != nil {
-		return nil, err
+
+	if err != nil || !token.Valid {
+		return nil, errors.New("Invalid or expired token")
 	}
 
-	if claims, ok := token.Claims.(*CustomClaims); ok && token.Valid {
-		return claims, nil
+	claims, ok := token.Claims.(*CustomClaims)
+	if !ok {
+		return nil, errors.New("Invalid token claims")
 	}
 
-	return nil, err
+	return claims, nil
 }

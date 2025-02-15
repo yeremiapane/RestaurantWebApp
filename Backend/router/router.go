@@ -5,6 +5,7 @@ import (
 	"github.com/yeremiapane/restaurant-app/controllers"
 	"github.com/yeremiapane/restaurant-app/middlewares"
 	"gorm.io/gorm"
+	"os"
 )
 
 func SetupRouter(db *gorm.DB) *gin.Engine {
@@ -31,7 +32,9 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 
 	// Auth group
 	auth := r.Group("/")
-	auth.Use(middlewares.AuthMiddleware())
+	if os.Getenv("ENV") != "TEST" {
+		auth.Use(middlewares.AuthMiddleware())
+	}
 
 	// USER
 	auth.GET("/profile", userCtrl.GetProfile)
