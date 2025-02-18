@@ -9,9 +9,11 @@ import (
 
 func SetupRouter(db *gorm.DB) *gin.Engine {
 	r := gin.Default()
+
+	r.Use(middlewares.CORSMiddlewares())
 	r.Use(middlewares.LoggerMiddleware())
 
-	// Controller
+	// Inisialisasi controller
 	userCtrl := controllers.NewUserController(db)
 	tableCtrl := controllers.NewTableController(db)
 	customerCtrl := controllers.NewCustomerController(db)
@@ -22,18 +24,40 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	cleanLogCtrl := controllers.NewCleaningLogController(db)
 	notificationCtrl := controllers.NewNotificationController(db)
 
-	// Public routes
-	r.GET("/ping", func(c *gin.Context) { c.JSON(200, gin.H{"message": "pong"}) })
+	// ----------------------------------------------------------------
+	//                      PUBLIC ROUTES
+	// ----------------------------------------------------------------
+	r.GET("/ping", func(c *gin.Context) {
+		c.JSON(200, gin.H{"message": "pong"})
+	})
+
 	r.POST("/register", userCtrl.Register)
 	r.POST("/login", userCtrl.Login)
-	// Route WebSocket KDS
+
+	// Endpoint KDS WebSocket (opsional, jika Chef perlu real-time)
 	r.GET("/kds/ws", controllers.KDSHandler)
 
-	// Auth group
+	// -- CUSTOMER (Tanpa Auth) --
+	// Lihat kategori
+	r.GET("/categories", categoryCtrl.GetAllCategories)
+	// Lihat menu
+	r.GET("/menus", menuCtrl.GetAllMenus)
+
+	// Membuat order (Customer tidak perlu login)
+	r.POST("/orders", orderCtrl.CreateOrder)
+	// Opsional: Melihat detail order
+	r.GET("/orders/:order_id", orderCtrl.GetOrderByID)
+
+	// Membayar (mis. cash/QRIS) tanpa login (sesuai kebutuhan)
+	r.POST("/payments", paymentCtrl.CreatePayment)
+
+	// ----------------------------------------------------------------
+	//                      AUTHENTICATED ROUTES
+	// ----------------------------------------------------------------
 	auth := r.Group("/")
 	auth.Use(middlewares.AuthMiddleware())
 
-	// USER
+	// Contoh: Profil user (Admin/Staff/Chef)
 	auth.GET("/profile", userCtrl.GetProfile)
 	auth.GET("/users", userCtrl.GetAllUsers)
 
@@ -41,54 +65,49 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	auth.GET("/tables", tableCtrl.GetAllTables)
 	auth.PATCH("/tables/:table_id", tableCtrl.UpdateTableStatus)
 
-	// CUSTOMERS
+	// CUSTOMERS (staff/admin)
 	auth.GET("/customers", customerCtrl.GetAllCustomers)
-	auth.POST("/customers", customerCtrl.CreateCustomer)
+	auth.POST("/customers", customerCtrl.CreateCustomer) // mgkn staff menambahkan customer manual
 	auth.GET("/customers/:customer_id", customerCtrl.GetCustomerByID)
 	auth.PATCH("/customers/:customer_id", customerCtrl.UpdateCustomer)
 	auth.DELETE("/customers/:customer_id", customerCtrl.DeleteCustomer)
 
-	// MENU CATEGORIES
-	auth.GET("/categories", categoryCtrl.GetAllCategories)
+	// MENU CATEGORIES (staff/admin only)
 	auth.POST("/categories", categoryCtrl.CreateCategory)
 	auth.GET("/categories/:cat_id", categoryCtrl.GetCategoryByID)
 	auth.PATCH("/categories/:cat_id", categoryCtrl.UpdateCategory)
 	auth.DELETE("/categories/:cat_id", categoryCtrl.DeleteCategory)
 
-	// MENUS
-	auth.GET("/menus", menuCtrl.GetAllMenus)
+	// MENUS (staff/admin)
 	auth.POST("/menus", menuCtrl.CreateMenu)
-	auth.GET("/menus/:menu_id", menuCtrl.GetMenuByID)
+	auth.GET("/menus/:menu_id", menuCtrl.GetMenuByID)     // detail 1 menu
 	auth.PATCH("/menus/:menu_id", menuCtrl.UpdateMenu)
 	auth.DELETE("/menus/:menu_id", menuCtrl.DeleteMenu)
 
-	// ORDERS
-	auth.GET("/orders", orderCtrl.GetAllOrders)
-	auth.POST("/orders", orderCtrl.CreateOrder)
-	auth.GET("/orders/:order_id", orderCtrl.GetOrderByID)
-	auth.PATCH("/orders/:order_id", orderCtrl.UpdateOrder)
+	// ORDERS (staff/admin)
+	auth.GET("/orders", orderCtrl.GetAllOrders)            // melihat semua orders
+	auth.PATCH("/orders/:order_id", orderCtrl.UpdateOrder) // staff menambahkan item, dsb.
 	auth.DELETE("/orders/:order_id", orderCtrl.DeleteOrder)
 
-	// PAYMENTS
+	// PAYMENTS (staff/admin)
 	auth.GET("/payments", paymentCtrl.GetAllPayments)
-	auth.POST("/payments", paymentCtrl.CreatePayment)
 	auth.GET("/payments/:payment_id", paymentCtrl.GetPaymentByID)
 	auth.DELETE("/payments/:payment_id", paymentCtrl.DeletePayment)
 
-	// CLEANING LOGS
+	// CLEANING LOGS (Cleaner, staff, admin)
 	auth.GET("/cleaning-logs", cleanLogCtrl.GetAllCleaningLogs)
 	auth.POST("/cleaning-logs", cleanLogCtrl.CreateCleaningLog)
 	auth.GET("/cleaning-logs/:clean_id", cleanLogCtrl.GetCleaningLogByID)
 	auth.PATCH("/cleaning-logs/:clean_id", cleanLogCtrl.UpdateCleaningLog)
 	auth.DELETE("/cleaning-logs/:clean_id", cleanLogCtrl.DeleteCleaningLog)
 
-	// NOTIFICATIONS
+	// NOTIFICATIONS (staff/admin)
 	auth.GET("/notifications", notificationCtrl.GetAllNotifications)
 	auth.POST("/notifications", notificationCtrl.CreateNotification)
 	auth.GET("/notifications/:notif_id", notificationCtrl.GetNotificationByID)
 	auth.DELETE("/notifications/:notif_id", notificationCtrl.DeleteNotification)
 
-	// KDS item-level
+	// KDS item-level (Chef)
 	auth.POST("/order-items/:item_id/start", orderCtrl.StartCookingItem)
 	auth.POST("/order-items/:item_id/finish", orderCtrl.FinishCookingItem)
 
