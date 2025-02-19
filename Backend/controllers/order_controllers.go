@@ -11,6 +11,7 @@ import (
 
 	"github.com/yeremiapane/restaurant-app/models"
 	"github.com/yeremiapane/restaurant-app/utils"
+
 	// import kds untuk broadcast (jika masih ingin menyiarkan event ke websocket)
 	"github.com/yeremiapane/restaurant-app/kds"
 )
@@ -33,17 +34,26 @@ func (oc *OrderController) GetAllOrders(c *gin.Context) {
 	utils.RespondJSON(c, http.StatusOK, "List of orders", orders)
 }
 
-// CreateOrder -> buat order (status='draft'), item => 'pending'
+// CreateOrder -> buat order (status='pending_payment')
 func (oc *OrderController) CreateOrder(c *gin.Context) {
+	tableID := c.Param("table_id")
+
+	// Cek sesi customer Aktif
+	var customer models.Customer
+	if err := oc.DB.Where("table_id = ? AND status = ?", tableID, "active").First(&customer).Error; err != nil {
+		utils.RespondError(c, http.StatusNotFound, fmt.Errorf("tidak ada sesi aktif di meja ini"))
+		return
+	}
+
 	type ItemReq struct {
 		MenuID       uint   `json:"menu_id"`
 		Quantity     int    `json:"quantity"`
 		Notes        string `json:"notes"`
-		ParentItemID *uint  `json:"parent_item_id,omitempty"`
+		ParentItemID *uint  `json:"parent_item_id,omitempty"` // untuk add-on
 	}
+
 	type ReqBody struct {
-		CustomerID uint      `json:"customer_id" binding:"required"`
-		Items      []ItemReq `json:"items" binding:"required"`
+		Items []ItemReq `json:"items" binding:"required"`
 	}
 
 	var body ReqBody
@@ -52,14 +62,15 @@ func (oc *OrderController) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Buat order => 'draft'
+	// Buat order dengan status pending_payment
 	order := models.Order{
-		CustomerID:  body.CustomerID,
+		CustomerID:  customer.ID,
 		Status:      "pending_payment",
 		TotalAmount: 0,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
+
 	if err := oc.DB.Create(&order).Error; err != nil {
 		utils.RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -83,8 +94,8 @@ func (oc *OrderController) CreateOrder(c *gin.Context) {
 			Quantity:     item.Quantity,
 			Price:        menu.Price,
 			Notes:        item.Notes,
-			ParentItemID: item.ParentItemID,
-			Status:       "pending", // item-level status
+			ParentItemID: item.ParentItemID, // untuk add-on
+			Status:       "pending",
 			CreatedAt:    time.Now(),
 			UpdatedAt:    time.Now(),
 		}
@@ -95,7 +106,7 @@ func (oc *OrderController) CreateOrder(c *gin.Context) {
 	order.TotalAmount = total
 	oc.DB.Save(&order)
 
-	utils.RespondJSON(c, http.StatusCreated, "Order created (draft)", order)
+	utils.RespondJSON(c, http.StatusCreated, "Order created", order)
 }
 
 // GetOrderByID -> detail 1 order
@@ -114,65 +125,77 @@ func (oc *OrderController) GetOrderByID(c *gin.Context) {
 	utils.RespondJSON(c, http.StatusOK, "Order detail", order)
 }
 
-// UpdateOrder -> menambahkan item baru / ubah status
+// UpdateOrder untuk admin/staff mengupdate order
 func (oc *OrderController) UpdateOrder(c *gin.Context) {
-	idStr := c.Param("order_id")
-	id, _ := strconv.Atoi(idStr)
-
-	type itemReq struct {
-		MenuID   uint `json:"menu_id"`
-		Quantity int  `json:"quantity"`
-	}
-	type reqBody struct {
-		Status string    `json:"status"`
-		Items  []itemReq `json:"items"`
-	}
-
-	var body reqBody
-	if err := c.ShouldBindJSON(&body); err != nil {
-		utils.RespondError(c, http.StatusBadRequest, err)
+	roleInterface, _ := c.Get("role")
+	if roleInterface != "admin" && roleInterface != "staff" {
+		utils.RespondError(c, http.StatusForbidden, ErrNoPermission)
 		return
 	}
 
+	orderID := c.Param("order_id")
+
 	var order models.Order
-	if err := oc.DB.Preload("OrderItems").First(&order, id).Error; err != nil {
+	if err := oc.DB.Preload("OrderItems").First(&order, orderID).Error; err != nil {
 		utils.RespondError(c, http.StatusNotFound, err)
 		return
 	}
 
-	// Update status
-	if body.Status != "" {
-		order.Status = body.Status
+	type UpdateReq struct {
+		Status *string `json:"status"`
+		Items  []struct {
+			ID       uint    `json:"id"`
+			Status   string  `json:"status"`
+			Quantity *int    `json:"quantity"`
+			Notes    *string `json:"notes"`
+		} `json:"items"`
 	}
 
-	// Tambah item
-	if len(body.Items) > 0 {
-		var total = order.TotalAmount
-		for _, it := range body.Items {
-			var menu models.Menu
-			if err := oc.DB.First(&menu, it.MenuID).Error; err == nil {
-				subTotal := float64(it.Quantity) * menu.Price
-				total += subTotal
-
-				orderItem := models.OrderItem{
-					OrderID:   order.ID,
-					MenuID:    menu.ID,
-					Quantity:  it.Quantity,
-					Price:     menu.Price,
-					Status:    "pending",
-					CreatedAt: time.Now(),
-					UpdatedAt: time.Now(),
-				}
-				oc.DB.Create(&orderItem)
-			}
-		}
-		order.TotalAmount = total
-	}
-
-	if err := oc.DB.Save(&order).Error; err != nil {
-		utils.RespondError(c, http.StatusInternalServerError, err)
+	var req UpdateReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.RespondError(c, http.StatusBadRequest, err)
 		return
 	}
+
+	tx := oc.DB.Begin()
+
+	// Update order status if provided
+	if req.Status != nil {
+		order.Status = *req.Status
+		if err := tx.Save(&order).Error; err != nil {
+			tx.Rollback()
+			utils.RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+	}
+
+	// Update items if provided
+	for _, itemUpdate := range req.Items {
+		var item models.OrderItem
+		if err := tx.First(&item, itemUpdate.ID).Error; err != nil {
+			continue
+		}
+
+		item.Status = itemUpdate.Status
+		if itemUpdate.Quantity != nil {
+			item.Quantity = *itemUpdate.Quantity
+		}
+		if itemUpdate.Notes != nil {
+			item.Notes = *itemUpdate.Notes
+		}
+
+		if err := tx.Save(&item).Error; err != nil {
+			tx.Rollback()
+			utils.RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+	}
+
+	tx.Commit()
+
+	// Broadcast updates
+	kds.BroadcastOrderUpdate(order)
+	kds.BroadcastStaffNotification(fmt.Sprintf("Order #%d updated by %s", order.ID, roleInterface))
 
 	utils.RespondJSON(c, http.StatusOK, "Order updated", order)
 }
@@ -245,20 +268,21 @@ func (oc *OrderController) FinishCookingItem(c *gin.Context) {
 		Count(&countNotReady)
 
 	if countNotReady == 0 {
-		// semua item => ready => set orders.status='ready'
 		var order models.Order
 		if err := oc.DB.First(&order, item.OrderID).Error; err == nil {
 			order.Status = "ready"
 			now := time.Now()
-			order.FinishCookingTime = &now // jika mau catat finish masak
+			order.FinishCookingTime = &now
 			oc.DB.Save(&order)
 
-			// broadcast ke KDS?
+			// Broadcast ke semua
 			kds.BroadcastOrderUpdate(order)
+			// Notifikasi khusus staff
+			kds.BroadcastStaffNotification(fmt.Sprintf("Order #%d siap disajikan", order.ID))
 		}
 	}
 
-	utils.RespondJSON(c, http.StatusOK, "Item finished, set ready", item)
+	utils.RespondJSON(c, http.StatusOK, "Item finished", item)
 }
 
 // StartCooking -> Chef menandai entire order => "in_progress" (opsional)
@@ -335,4 +359,97 @@ func (oc *OrderController) CompleteOrder(c *gin.Context) {
 	oc.DB.Save(&order)
 
 	utils.RespondJSON(c, http.StatusOK, "Order completed", order)
+}
+
+// GetPendingItems khusus untuk Chef - menampilkan item yang perlu dimasak
+func (oc *OrderController) GetPendingItems(c *gin.Context) {
+	// Cek role
+	roleInterface, _ := c.Get("role")
+	if roleInterface != "chef" {
+		utils.RespondError(c, http.StatusForbidden, ErrNoPermission)
+		return
+	}
+
+	var items []models.OrderItem
+	if err := oc.DB.Preload("Menu").
+		Preload("Order").
+		Where("status = ?", "pending").
+		Order("created_at asc").
+		Find(&items).Error; err != nil {
+		utils.RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	utils.RespondJSON(c, http.StatusOK, "Pending items", items)
+}
+
+// GetKitchenDisplay khusus untuk Chef & Staff - overview dapur
+func (oc *OrderController) GetKitchenDisplay(c *gin.Context) {
+	role, _ := c.Get("role")
+	if role != "chef" && role != "staff" {
+		utils.RespondError(c, http.StatusForbidden, ErrNoPermission)
+		return
+	}
+
+	var orders []models.Order
+	if err := oc.DB.Preload("OrderItems").
+		Preload("OrderItems.Menu").
+		Where("status IN ?", []string{"paid", "in_progress", "ready"}).
+		Order("created_at asc").
+		Find(&orders).Error; err != nil {
+		utils.RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	utils.RespondJSON(c, http.StatusOK, "Kitchen display orders", orders)
+}
+
+// GetOrderAnalytics untuk admin melihat analisis order
+func (oc *OrderController) GetOrderAnalytics(c *gin.Context) {
+	roleInterface, _ := c.Get("role")
+	if roleInterface != "admin" {
+		utils.RespondError(c, http.StatusForbidden, ErrNoPermission)
+		return
+	}
+
+	var analytics struct {
+		PopularItems []struct {
+			MenuID   uint    `json:"menu_id"`
+			MenuName string  `json:"menu_name"`
+			Count    int     `json:"count"`
+			Revenue  float64 `json:"revenue"`
+		} `json:"popular_items"`
+		AveragePrepTime float64 `json:"average_prep_time"`
+		PeakHours       []struct {
+			Hour  int   `json:"hour"`
+			Count int64 `json:"count"`
+		} `json:"peak_hours"`
+	}
+
+	// Query popular items
+	oc.DB.Raw(`
+		SELECT m.id as menu_id, m.name as menu_name, 
+		COUNT(oi.id) as count, SUM(oi.price * oi.quantity) as revenue
+		FROM order_items oi
+		JOIN menus m ON oi.menu_id = m.id
+		GROUP BY m.id, m.name
+		ORDER BY count DESC
+		LIMIT 10
+	`).Scan(&analytics.PopularItems)
+
+	// Calculate average prep time
+	oc.DB.Model(&models.Order{}).
+		Where("finish_cooking_time IS NOT NULL").
+		Select("AVG(EXTRACT(EPOCH FROM (finish_cooking_time - start_cooking_time)))").
+		Row().Scan(&analytics.AveragePrepTime)
+
+	// Get peak hours
+	oc.DB.Raw(`
+		SELECT EXTRACT(HOUR FROM created_at) as hour, COUNT(*) as count
+		FROM orders
+		GROUP BY EXTRACT(HOUR FROM created_at)
+		ORDER BY count DESC
+	`).Scan(&analytics.PeakHours)
+
+	utils.RespondJSON(c, http.StatusOK, "Order analytics", analytics)
 }

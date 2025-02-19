@@ -1,10 +1,12 @@
 package controllers
 
 import (
+	"fmt"
 	"net/http"
 	_ "strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/yeremiapane/restaurant-app/kds"
 	"github.com/yeremiapane/restaurant-app/models"
 	"github.com/yeremiapane/restaurant-app/utils"
 	"gorm.io/gorm"
@@ -81,6 +83,9 @@ func (tc *TableController) UpdateTableStatus(c *gin.Context) {
 		return
 	}
 
+	// Broadcast update status meja
+	kds.BroadcastTableUpdate(table)
+
 	utils.InfoLogger.Printf("Table %d status changed to %s", table.ID, table.Status)
 	utils.RespondJSON(c, http.StatusOK, "Table status updated", table)
 }
@@ -129,4 +134,34 @@ func (tc *TableController) FindTablesByStatus(c *gin.Context) {
 		return
 	}
 	utils.RespondJSON(c, http.StatusOK, "Tables with status: "+status, tables)
+}
+
+// MarkTableClean untuk Cleaner menandai meja siap digunakan
+func (tc *TableController) MarkTableClean(c *gin.Context) {
+	roleInterface, _ := c.Get("role")
+	if roleInterface != "cleaner" && roleInterface != "staff" {
+		utils.RespondError(c, http.StatusForbidden, ErrNoPermission)
+		return
+	}
+
+	tableID := c.Param("table_id")
+
+	var table models.Table
+	if err := tc.DB.First(&table, tableID).Error; err != nil {
+		utils.RespondError(c, http.StatusNotFound, err)
+		return
+	}
+
+	if table.Status != "dirty" {
+		utils.RespondError(c, http.StatusBadRequest, fmt.Errorf("table is not dirty"))
+		return
+	}
+
+	table.Status = "available"
+	if err := tc.DB.Save(&table).Error; err != nil {
+		utils.RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	utils.RespondJSON(c, http.StatusOK, "Table marked as clean", table)
 }

@@ -10,6 +10,8 @@ import (
 func SetupRouter(db *gorm.DB) *gin.Engine {
 	r := gin.Default()
 
+	// Apply security middlewares
+	r.Use(middlewares.SecurityHeaders())
 	r.Use(middlewares.CORSMiddlewares())
 	r.Use(middlewares.LoggerMiddleware())
 
@@ -23,7 +25,8 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	paymentCtrl := controllers.NewPaymentController(db)
 	cleanLogCtrl := controllers.NewCleaningLogController(db)
 	notificationCtrl := controllers.NewNotificationController(db)
-
+	adminCtrl := controllers.NewAdminController(db)
+	receiptCtrl := controllers.NewReceiptController(db)
 
 	// Melayani File Statis
 
@@ -34,8 +37,13 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		c.JSON(200, gin.H{"message": "pong"})
 	})
 
-	r.POST("/register", userCtrl.Register)
-	r.POST("/login", userCtrl.Login)
+	// Rate limiter untuk login/register
+	public := r.Group("/")
+	public.Use(middlewares.NewStrictRateLimiter())
+	{
+		public.POST("/register", userCtrl.Register)
+		public.POST("/login", userCtrl.Login)
+	}
 
 	// Endpoint KDS WebSocket (opsional, jika Chef perlu real-time)
 	r.GET("/kds/ws", controllers.KDSHandler)
@@ -56,11 +64,16 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	// Membayar (mis. cash/QRIS) tanpa login (sesuai kebutuhan)
 	r.POST("/payments", paymentCtrl.CreatePayment)
 
+	// Public routes untuk customer
+	r.GET("/tables/:table_id/scan", customerCtrl.ScanTable)           // Scan QR
+	r.GET("/tables/:table_id/session", customerCtrl.GetActiveSession) // Cek sesi aktif
+	// r.POST("/tables/:table_id/orders", orderCtrl.CreateOrderFromTable) // Buat order dari meja
+
 	// ----------------------------------------------------------------
 	//                      AUTHENTICATED ROUTES
 	// ----------------------------------------------------------------
-	auth := r.Group("/admin/")
-	auth.Use(middlewares.AuthMiddleware())
+	auth := r.Group("/admin")
+	auth.Use(middlewares.EnhancedAuthMiddleware())
 
 	// Contoh: Profil user (Admin/Staff/Chef)
 	auth.GET("/profile", userCtrl.GetProfile)
@@ -84,7 +97,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 
 	// MENUS (staff/admin)
 	auth.POST("/menus", menuCtrl.CreateMenu)
-	auth.GET("/menus/:menu_id", menuCtrl.GetMenuByID)     // detail 1 menu
+	auth.GET("/menus/:menu_id", menuCtrl.GetMenuByID) // detail 1 menu
 	auth.PATCH("/menus/:menu_id", menuCtrl.UpdateMenu)
 	auth.DELETE("/menus/:menu_id", menuCtrl.DeleteMenu)
 
@@ -97,6 +110,15 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	auth.GET("/payments", paymentCtrl.GetAllPayments)
 	auth.GET("/payments/:payment_id", paymentCtrl.GetPaymentByID)
 	auth.DELETE("/payments/:payment_id", paymentCtrl.DeletePayment)
+	auth.POST("/payments/:payment_id/verify", paymentCtrl.VerifyPayment)
+
+	// Routes untuk receipt dengan middleware logger
+	receiptGroup := auth.Group("/payments")
+	receiptGroup.Use(middlewares.ReceiptLoggerMiddleware())
+	{
+		receiptGroup.POST("/:payment_id/receipt", receiptCtrl.GenerateReceipt)
+	}
+	auth.GET("/receipts/:receipt_id", receiptCtrl.GetReceiptByID)
 
 	// CLEANING LOGS (Cleaner, staff, admin)
 	auth.GET("/cleaning-logs", cleanLogCtrl.GetAllCleaningLogs)
@@ -119,6 +141,21 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	auth.POST("/orders/:id/start-cooking", orderCtrl.StartCooking)
 	auth.POST("/orders/:id/finish-cooking", orderCtrl.FinishCooking)
 	auth.POST("/orders/:id/complete", orderCtrl.CompleteOrder) // staff mark completed
+
+	// Routes untuk Chef
+	auth.GET("/kitchen/pending-items", orderCtrl.GetPendingItems)
+	auth.GET("/kitchen/display", orderCtrl.GetKitchenDisplay)
+
+	// Routes untuk Staff/Cleaner
+	auth.PATCH("/tables/:table_id/clean", tableCtrl.MarkTableClean)
+
+	// Routes untuk Admin
+	auth.GET("/dashboard/stats", adminCtrl.GetDashboardStats)
+	auth.GET("/orders/flow", adminCtrl.MonitorOrderFlow)
+	auth.GET("/orders/analytics", orderCtrl.GetOrderAnalytics)
+
+	// WebSocket endpoint dengan role-based access
+	auth.GET("/ws/:role", middlewares.RoleCheck(), controllers.KDSHandler)
 
 	return r
 }
