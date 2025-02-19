@@ -1,8 +1,10 @@
 package controllers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yeremiapane/restaurant-app/models"
@@ -76,6 +78,30 @@ func (mc *MenuController) GetMenuByID(c *gin.Context) {
 
 	utils.RespondJSON(c, http.StatusOK, "Menu detail", menu)
 }
+
+
+// GetMenuByCategory mengembalikan daftar menu berdasarkan kategori
+// Endpoint: GET /menus/by-category?category=<nama kategori>
+func (mc *MenuController) GetMenuByCategory(c *gin.Context) {
+	categoryName := c.Query("category")
+	if categoryName == "" {
+		utils.RespondError(c, http.StatusBadRequest, errors.New("query parameter 'category' is required"))
+		return
+	}
+
+	var menus []models.Menu
+	// Gunakan join pada tabel menu_categories untuk mencari berdasarkan nama kategori (case-insensitive)
+	if err := mc.DB.Preload("Category").
+		Joins("JOIN menu_categories ON menu_categories.id = menus.category_id").
+		Where("LOWER(menu_categories.name) = ?", strings.ToLower(categoryName)).
+		Find(&menus).Error; err != nil {
+		utils.RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	utils.RespondJSON(c, http.StatusOK, "List of menus for category: "+categoryName, menus)
+}
+
 
 // UpdateMenu
 func (mc *MenuController) UpdateMenu(c *gin.Context) {

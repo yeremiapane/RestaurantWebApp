@@ -24,6 +24,9 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	cleanLogCtrl := controllers.NewCleaningLogController(db)
 	notificationCtrl := controllers.NewNotificationController(db)
 
+
+	// Melayani File Statis
+
 	// ----------------------------------------------------------------
 	//                      PUBLIC ROUTES
 	// ----------------------------------------------------------------
@@ -40,8 +43,10 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	// -- CUSTOMER (Tanpa Auth) --
 	// Lihat kategori
 	r.GET("/categories", categoryCtrl.GetAllCategories)
+
 	// Lihat menu
 	r.GET("/menus", menuCtrl.GetAllMenus)
+	r.GET("/menus/by-category", menuCtrl.GetMenuByCategory)
 
 	// Membuat order (Customer tidak perlu login)
 	r.POST("/orders", orderCtrl.CreateOrder)
@@ -54,7 +59,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	// ----------------------------------------------------------------
 	//                      AUTHENTICATED ROUTES
 	// ----------------------------------------------------------------
-	auth := r.Group("/")
+	auth := r.Group("/admin/")
 	auth.Use(middlewares.AuthMiddleware())
 
 	// Contoh: Profil user (Admin/Staff/Chef)
@@ -74,7 +79,6 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 
 	// MENU CATEGORIES (staff/admin only)
 	auth.POST("/categories", categoryCtrl.CreateCategory)
-	auth.GET("/categories/:cat_id", categoryCtrl.GetCategoryByID)
 	auth.PATCH("/categories/:cat_id", categoryCtrl.UpdateCategory)
 	auth.DELETE("/categories/:cat_id", categoryCtrl.DeleteCategory)
 
