@@ -45,8 +45,18 @@ func (tc *TableController) CreateTable(c *gin.Context) {
 		return
 	}
 
+	// Broadcast dengan data lengkap
+	stats := tc.getDashboardStats()
+	kds.BroadcastMessage(kds.Message{
+		Event: kds.EventTableCreate,
+		Data: map[string]interface{}{
+			"table": table,
+			"stats": stats,
+		},
+	})
+
 	utils.InfoLogger.Printf("New table created: %s (status=%s)", table.TableNumber, table.Status)
-	utils.RespondJSON(c, http.StatusCreated, "Table created", table)
+	utils.RespondJSON(c, http.StatusCreated, "Table created successfully", table)
 }
 
 // GetAllTables -> menampilkan seluruh meja
@@ -83,8 +93,15 @@ func (tc *TableController) UpdateTableStatus(c *gin.Context) {
 		return
 	}
 
-	// Broadcast update status meja
-	kds.BroadcastTableUpdate(table)
+	// Broadcast dengan data lengkap
+	stats := tc.getDashboardStats()
+	kds.BroadcastMessage(kds.Message{
+		Event: kds.EventTableUpdate,
+		Data: map[string]interface{}{
+			"table": table,
+			"stats": stats,
+		},
+	})
 
 	utils.InfoLogger.Printf("Table %d status changed to %s", table.ID, table.Status)
 	utils.RespondJSON(c, http.StatusOK, "Table status updated", table)
@@ -104,6 +121,16 @@ func (tc *TableController) DeleteTable(c *gin.Context) {
 		utils.RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
+
+	// Broadcast dengan data lengkap
+	stats := tc.getDashboardStats()
+	kds.BroadcastMessage(kds.Message{
+		Event: kds.EventTableDelete,
+		Data: map[string]interface{}{
+			"table_id": table.ID,
+			"stats":    stats,
+		},
+	})
 
 	utils.InfoLogger.Printf("Table %d deleted", table.ID)
 	utils.RespondJSON(c, http.StatusOK, "Table deleted", gin.H{
@@ -164,4 +191,20 @@ func (tc *TableController) MarkTableClean(c *gin.Context) {
 	}
 
 	utils.RespondJSON(c, http.StatusOK, "Table marked as clean", table)
+}
+
+// getDashboardStats menghitung statistik dashboard
+func (tc *TableController) getDashboardStats() map[string]interface{} {
+	var availableCount, occupiedCount, dirtyCount int64
+
+	tc.DB.Model(&models.Table{}).Where("status = ?", "available").Count(&availableCount)
+	tc.DB.Model(&models.Table{}).Where("status = ?", "occupied").Count(&occupiedCount)
+	tc.DB.Model(&models.Table{}).Where("status = ?", "dirty").Count(&dirtyCount)
+
+	return map[string]interface{}{
+		"available": availableCount,
+		"occupied":  occupiedCount,
+		"dirty":     dirtyCount,
+		"total":     availableCount + occupiedCount + dirtyCount,
+	}
 }

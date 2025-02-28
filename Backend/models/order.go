@@ -17,4 +17,5 @@ type Order struct {
 	CreatedAt         time.Time   `gorm:"not null" json:"created_at"`
 	UpdatedAt         time.Time   `gorm:"not null" json:"updated_at"`
 	OrderItems        []OrderItem `gorm:"foreignKey:OrderID" json:"order_items"`
+	TableID           uint        `json:"table_id"`
 }

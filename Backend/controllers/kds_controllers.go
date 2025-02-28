@@ -1,7 +1,9 @@
 package controllers
 
 import (
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -10,13 +12,15 @@ import (
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Sesuaikan dengan kebutuhan keamanan
+		origin := r.Header.Get("Origin")
+		return origin == "http://127.0.0.1:5500"
 	},
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
 }
 
 // KDSHandler -> endpoint WebSocket
 func KDSHandler(c *gin.Context) {
-	// Ambil role dari token/auth
 	roleInterface, exists := c.Get("role")
 	if !exists {
 		c.AbortWithStatus(http.StatusUnauthorized)
@@ -24,28 +28,31 @@ func KDSHandler(c *gin.Context) {
 	}
 	role := roleInterface.(string)
 
-	// Validasi role
-	if role != "chef" && role != "staff" && role != "admin" {
-		c.AbortWithStatus(http.StatusForbidden)
-		return
-	}
-
+	// Validasi role sudah dilakukan di middleware
 	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
+		log.Printf("Failed to upgrade connection: %v", err)
 		return
 	}
+	defer ws.Close()
 
-	// Register dengan role
+	// Register client dengan role
 	kds.RegisterClient(ws, role)
+	defer kds.UnregisterClient(ws)
 
-	// Baca pesan (jika perlu)
+	// Keep-alive dengan ping/pong
+	ws.SetPingHandler(func(string) error {
+		return ws.WriteControl(websocket.PongMessage, []byte{}, time.Now().Add(time.Second))
+	})
+
+	// Message loop
 	for {
 		_, _, err := ws.ReadMessage()
 		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("error reading message: %v", err)
+			}
 			break
 		}
 	}
-
-	// Unregister saat disconnect
-	kds.UnregisterClient(ws)
 }

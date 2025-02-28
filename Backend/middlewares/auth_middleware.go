@@ -14,29 +14,38 @@ import (
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
+
+		// Debug log
+		log.Printf("Auth Header: %v", authHeader)
+
 		if authHeader == "" {
-			utils.RespondError(c, http.StatusUnauthorized, errors.New("Authorization header missing"))
+			utils.RespondJSON(c, http.StatusUnauthorized, "No authorization header", gin.H{
+				"status": false,
+				"error":  "No authorization header",
+			})
 			c.Abort()
 			return
 		}
 
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		// Extract the token
+		tokenString := strings.Replace(authHeader, "Bearer ", "", 1)
+
+		// Debug log
+		log.Printf("Token: %v", tokenString)
+
+		// Validate the token
 		claims, err := utils.ParseToken(tokenString)
-		if err != nil || claims == nil {
-			utils.RespondError(c, http.StatusUnauthorized, errors.New("Invalid or expired token"))
+		if err != nil {
+			utils.RespondJSON(c, http.StatusUnauthorized, "Invalid token", gin.H{
+				"status": false,
+				"error":  err.Error(),
+			})
 			c.Abort()
 			return
 		}
 
-		if claims.UserID == 0 {
-			utils.RespondError(c, http.StatusUnauthorized, errors.New("Invalid user ID in token"))
-			c.Abort()
-			return
-		}
-
-		log.Printf("Decoded Claims: %+v\n", claims)
-
-		c.Set("userID", claims.UserID)
+		// Set user info to context
+		c.Set("user_id", claims.UserID)
 		c.Set("role", claims.Role)
 
 		c.Next()

@@ -2,6 +2,7 @@ package kds
 
 import (
 	"encoding/json"
+	"log"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -10,14 +11,17 @@ import (
 
 // Event types
 const (
-	EventOrderUpdate    = "order_update"
-	EventKitchenUpdate  = "kitchen_update"
-	EventTableUpdate    = "table_update"
-	EventStaffNotif     = "staff_notification"
-	EventPaymentUpdate  = "payment_update"
-	EventPaymentPending = "payment_pending"
-	EventPaymentSuccess = "payment_success"
-	EventReceiptUpdate  = "receipt_generated"
+	EventOrderUpdate     = "order_update"
+	EventKitchenUpdate   = "kitchen_update"
+	EventTableUpdate     = "table_update"
+	EventStaffNotif      = "staff_notification"
+	EventPaymentUpdate   = "payment_update"
+	EventPaymentPending  = "payment_pending"
+	EventPaymentSuccess  = "payment_success"
+	EventReceiptUpdate   = "receipt_generated"
+	EventTableCreate     = "table_create"
+	EventTableDelete     = "table_delete"
+	EventDashboardUpdate = "dashboard_update"
 )
 
 type Message struct {
@@ -117,6 +121,30 @@ func BroadcastGenerated(receipt models.Receipt) {
 	})
 }
 
+// BroadcastTableCreate -> notifikasi tabel baru dibuat
+func BroadcastTableCreate(table models.Table) {
+	broadcast(Message{
+		Event: EventTableCreate,
+		Data:  table,
+	})
+}
+
+// BroadcastTableDelete -> notifikasi tabel dihapus
+func BroadcastTableDelete(table models.Table) {
+	broadcast(Message{
+		Event: EventTableDelete,
+		Data:  table,
+	})
+}
+
+// BroadcastDashboardUpdate -> update dashboard
+func BroadcastDashboardUpdate(data interface{}) {
+	broadcast(Message{
+		Event: EventDashboardUpdate,
+		Data:  data,
+	})
+}
+
 // BroadcastMessage -> broadcast pesan umum
 func BroadcastMessage(msg Message) {
 	broadcast(msg)
@@ -127,21 +155,20 @@ func broadcast(msg Message) {
 	kdsHub.mutex.Lock()
 	defer kdsHub.mutex.Unlock()
 
-	data, _ := json.Marshal(msg)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("Error marshaling message: %v", err)
+		return
+	}
+
+	log.Printf("Broadcasting message: %s to %d clients", string(data), len(kdsHub.clients))
 
 	for conn, role := range kdsHub.clients {
-		// Filter berdasarkan role jika diperlukan
-		switch msg.Event {
-		case EventKitchenUpdate:
-			if role != "chef" && role != "admin" {
-				continue
-			}
-		case EventStaffNotif:
-			if role != "staff" && role != "admin" {
-				continue
-			}
+		log.Printf("Sending to client with role %s", role)
+		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+			log.Printf("Error sending message to client: %v", err)
+			continue
 		}
-
-		conn.WriteMessage(websocket.TextMessage, data)
+		log.Printf("Successfully sent message to client with role %s", role)
 	}
 }

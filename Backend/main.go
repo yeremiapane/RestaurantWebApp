@@ -4,19 +4,28 @@ import (
 	_ "fmt"
 	"log"
 	"os"
+	_ "strings"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/yeremiapane/restaurant-app/config"
+	"github.com/yeremiapane/restaurant-app/database"
 	"github.com/yeremiapane/restaurant-app/middlewares"
 	"github.com/yeremiapane/restaurant-app/models"
 	"github.com/yeremiapane/restaurant-app/router"
+	"github.com/yeremiapane/restaurant-app/services"
 	"github.com/yeremiapane/restaurant-app/utils"
 	"gorm.io/gorm"
 )
 
-func main() {
-	godotenv.Load() // load file .env jika ada
+func init() {
+	// Load .env file di awal sebelum apapun
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Warning: .env file not found or error loading: %v", err)
+	}
+}
 
+func main() {
 	// Init logger
 	utils.InitLogger()
 	utils.InfoLogger.Println("Starting Restaurant App...")
@@ -30,6 +39,12 @@ func main() {
 
 	// Setup rate limiter (10 requests per second per IP)
 	rateLimiter := middlewares.NewRateLimiter(50, 1)
+
+	// Inisialisasi change monitor dengan interval yang lebih pendek
+	monitor := services.NewChangeMonitor(db)
+	monitor.Interval = 500 * time.Millisecond // 500ms interval untuk polling lebih cepat
+	monitor.Start()
+	defer monitor.Stop()
 
 	r := router.SetupRouter(db)
 	r.Use(rateLimiter.RateLimit())
@@ -60,9 +75,15 @@ func autoMigrate(db *gorm.DB) {
 		&models.Receipt{},
 		&models.ReceiptItem{},
 		&models.ReceiptAddOn{},
+		&models.DBChange{},
 	)
 	if err != nil {
 		utils.ErrorLogger.Fatalf("Failed to AutoMigrate: %v", err)
 	}
 	utils.InfoLogger.Println("AutoMigrate completed.")
+
+	// Execute triggers
+	if err := database.ExecuteTriggers(db); err != nil {
+		utils.ErrorLogger.Printf("Error setting up triggers: %v", err)
+	}
 }

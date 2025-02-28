@@ -2,9 +2,9 @@ package controllers
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yeremiapane/restaurant-app/models"
@@ -63,49 +63,46 @@ func (uc *UserController) Register(c *gin.Context) {
 
 // Login user -> return JWT
 func (uc *UserController) Login(c *gin.Context) {
-	fmt.Println("InfoLogger is nil:", utils.InfoLogger == nil)
-	fmt.Println("ErrorLogger is nil:", utils.ErrorLogger == nil)
-
 	var input struct {
 		Email    string `json:"email" binding:"required"`
 		Password string `json:"password" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
-		utils.InfoLogger.Errorf("Login: invalid input: %v", err)
 		utils.RespondError(c, http.StatusBadRequest, err)
 		return
 	}
 
-	if utils.InfoLogger == nil {
-		log.Println("WARNING: Logger is nil! Initializing logger.")
-		utils.InitLogger()
-	}
-
 	var user models.User
 	if err := uc.DB.Where("email = ?", input.Email).First(&user).Error; err != nil {
-		utils.InfoLogger.Errorf("Login failed: User not found: %s", input.Email)
 		utils.RespondError(c, http.StatusUnauthorized, errors.New("Invalid credentials"))
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
-		utils.InfoLogger.Errorf("Login failed: Password mismatch for user %s", input.Email)
 		utils.RespondError(c, http.StatusUnauthorized, errors.New("Invalid credentials"))
 		return
 	}
 
+	// Generate token
 	token, err := utils.GenerateToken(user.ID, user.Role)
 	if err != nil {
-		utils.InfoLogger.Errorf("Token generation failed for user %s: %v", input.Email, err)
-		utils.RespondError(c, http.StatusInternalServerError, errors.New("Failed to generate token"))
+		utils.RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	utils.InfoLogger.Infof("User login success: %s (role=%s)", user.Email, user.Role)
+	// Log untuk debugging
+	log.Printf("Login successful for user: %s, role: %s", user.Email, user.Role)
+	log.Printf("Generated token: %s", token)
 
-	utils.RespondJSON(c, http.StatusOK, "Login success", gin.H{
-		"token": token,
+	// Pastikan format response sesuai dengan yang diharapkan frontend
+	c.JSON(http.StatusOK, gin.H{
+		"status":  true,
+		"message": "Login successful",
+		"data": gin.H{
+			"token":     token,
+			"user_role": strings.ToLower(user.Role),
+		},
 	})
 }
 

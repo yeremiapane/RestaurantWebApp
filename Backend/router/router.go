@@ -153,9 +153,14 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	auth.GET("/dashboard/stats", adminCtrl.GetDashboardStats)
 	auth.GET("/orders/flow", adminCtrl.MonitorOrderFlow)
 	auth.GET("/orders/analytics", orderCtrl.GetOrderAnalytics)
+	auth.GET("/orders/getflow", adminCtrl.GetOrderFlow)
 
-	// WebSocket endpoint dengan role-based access
-	auth.GET("/ws/:role", middlewares.RoleCheck(), controllers.KDSHandler)
+	// WebSocket endpoint dengan middleware khusus
+	wsGroup := r.Group("/ws")
+	wsGroup.Use(middlewares.WebSocketAuthMiddleware())
+	{
+		wsGroup.GET("/:role", controllers.KDSHandler)
+	}
 
 	return r
 }
