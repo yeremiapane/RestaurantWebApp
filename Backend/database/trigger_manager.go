@@ -48,10 +48,10 @@ func ExecuteTriggers(db *gorm.DB) error {
 
 	db.Raw(`
         SELECT 
-            TRIGGER_NAME as Trigger,
-            EVENT_MANIPULATION as Event,
-            EVENT_OBJECT_TABLE as Table,
-            ACTION_TIMING as Timing
+            TRIGGER_NAME as trigger_name,
+            EVENT_MANIPULATION as event_type,
+            EVENT_OBJECT_TABLE as table_name,
+            ACTION_TIMING as timing
         FROM information_schema.triggers
         WHERE TRIGGER_SCHEMA = DATABASE()
     `).Scan(&triggers)

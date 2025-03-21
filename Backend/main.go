@@ -61,6 +61,14 @@ func main() {
 }
 
 func autoMigrate(db *gorm.DB) {
+	// Hapus kolom lama terlebih dahulu jika ada
+	if db.Migrator().HasColumn(&models.Menu{}, "image_url") {
+		if err := db.Migrator().DropColumn(&models.Menu{}, "image_url"); err != nil {
+			utils.ErrorLogger.Printf("Error dropping image_url column: %v", err)
+		}
+	}
+
+	// Kemudian lakukan AutoMigrate
 	err := db.AutoMigrate(
 		&models.User{},
 		&models.Table{},
@@ -85,5 +93,10 @@ func autoMigrate(db *gorm.DB) {
 	// Execute triggers
 	if err := database.ExecuteTriggers(db); err != nil {
 		utils.ErrorLogger.Printf("Error setting up triggers: %v", err)
+	}
+
+	// Update existing records yang memiliki image_urls NULL
+	if err := db.Exec("UPDATE menus SET image_urls = '[]' WHERE image_urls IS NULL OR image_urls = ''").Error; err != nil {
+		utils.ErrorLogger.Printf("Error updating null image_urls: %v", err)
 	}
 }

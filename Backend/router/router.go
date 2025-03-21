@@ -1,6 +1,9 @@
 package router
 
 import (
+	"net/http"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"github.com/yeremiapane/restaurant-app/controllers"
 	"github.com/yeremiapane/restaurant-app/middlewares"
@@ -9,6 +12,23 @@ import (
 
 func SetupRouter(db *gorm.DB) *gin.Engine {
 	r := gin.Default()
+
+	// Middleware untuk membatasi akses ke direktori uploads
+	r.Static("/uploads", "./public/uploads")
+	r.Use(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/uploads/") {
+			// Hanya izinkan akses ke file gambar
+			if !strings.HasSuffix(strings.ToLower(c.Request.URL.Path), ".jpg") &&
+				!strings.HasSuffix(strings.ToLower(c.Request.URL.Path), ".jpeg") &&
+				!strings.HasSuffix(strings.ToLower(c.Request.URL.Path), ".png") &&
+				!strings.HasSuffix(strings.ToLower(c.Request.URL.Path), ".gif") &&
+				!strings.HasSuffix(strings.ToLower(c.Request.URL.Path), ".webp") {
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
+		}
+		c.Next()
+	})
 
 	// Apply security middlewares
 	r.Use(middlewares.SecurityHeaders())
@@ -103,7 +123,9 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 
 	// ORDERS (staff/admin)
 	auth.GET("/orders", orderCtrl.GetAllOrders)            // melihat semua orders
+	auth.GET("/orders/:order_id", orderCtrl.GetOrderByID)  // melihat detail order
 	auth.PATCH("/orders/:order_id", orderCtrl.UpdateOrder) // staff menambahkan item, dsb.
+	auth.PUT("/orders/:order_id", orderCtrl.UpdateOrder)   // untuk update status
 	auth.DELETE("/orders/:order_id", orderCtrl.DeleteOrder)
 
 	// PAYMENTS (staff/admin)
@@ -152,8 +174,11 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	// Routes untuk Admin
 	auth.GET("/dashboard/stats", adminCtrl.GetDashboardStats)
 	auth.GET("/orders/flow", adminCtrl.MonitorOrderFlow)
-	auth.GET("/orders/analytics", orderCtrl.GetOrderAnalytics)
+	auth.GET("/orders/analytics", adminCtrl.GetAnalytics)
 	auth.GET("/orders/getflow", adminCtrl.GetOrderFlow)
+	auth.GET("/orders/stats", adminCtrl.GetOrderStats)
+	auth.GET("/reports/export", adminCtrl.ExportData)
+	auth.GET("/reports/export-pdf", adminCtrl.ExportPDF)
 
 	// WebSocket endpoint dengan middleware khusus
 	wsGroup := r.Group("/ws")

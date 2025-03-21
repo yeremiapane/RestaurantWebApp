@@ -74,12 +74,12 @@ func ParseToken(tokenString string) (*CustomClaims, error) {
 	})
 
 	if err != nil || !token.Valid {
-		return nil, errors.New("Invalid or expired token")
+		return nil, errors.New("invalid or expired token")
 	}
 
 	claims, ok := token.Claims.(*CustomClaims)
 	if !ok {
-		return nil, errors.New("Invalid token claims")
+		return nil, errors.New("invalid token claims")
 	}
 
 	return claims, nil

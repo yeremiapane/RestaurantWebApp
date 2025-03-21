@@ -75,12 +75,12 @@ func (uc *UserController) Login(c *gin.Context) {
 
 	var user models.User
 	if err := uc.DB.Where("email = ?", input.Email).First(&user).Error; err != nil {
-		utils.RespondError(c, http.StatusUnauthorized, errors.New("Invalid credentials"))
+		utils.RespondError(c, http.StatusUnauthorized, errors.New("invalid credentials"))
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
-		utils.RespondError(c, http.StatusUnauthorized, errors.New("Invalid credentials"))
+		utils.RespondError(c, http.StatusUnauthorized, errors.New("invalid credentials"))
 		return
 	}
 
@@ -108,9 +108,19 @@ func (uc *UserController) Login(c *gin.Context) {
 
 // GetProfile -> memeriksa user dari JWT
 func (uc *UserController) GetProfile(c *gin.Context) {
-	// Data userID & role disimpan di context oleh AuthMiddleware
-	userIDInterface, _ := c.Get("userID")
-	userID := userIDInterface.(uint)
+	// Ubah cara mengambil user_id dari context
+	userIDInterface, exists := c.Get("user_id") // sesuaikan dengan key yang diset di middleware
+	if !exists {
+		utils.RespondError(c, http.StatusUnauthorized, errors.New("user id not found in context"))
+		return
+	}
+
+	// Konversi ke uint dengan pengecekan tipe
+	userID, ok := userIDInterface.(uint)
+	if !ok {
+		utils.RespondError(c, http.StatusInternalServerError, errors.New("invalid user id type"))
+		return
+	}
 
 	var user models.User
 	if err := uc.DB.First(&user, userID).Error; err != nil {
@@ -118,7 +128,7 @@ func (uc *UserController) GetProfile(c *gin.Context) {
 		return
 	}
 
-	utils.RespondJSON(c, http.StatusOK, "Profile data", gin.H{
+	utils.RespondJSON(c, http.StatusOK, "Profile data retrieved successfully", gin.H{
 		"id":    user.ID,
 		"name":  user.Name,
 		"email": user.Email,

@@ -51,7 +51,13 @@ func (tc *TableController) CreateTable(c *gin.Context) {
 		Event: kds.EventTableCreate,
 		Data: map[string]interface{}{
 			"table": table,
-			"stats": stats,
+			"stats": map[string]interface{}{
+				"table_stats": map[string]interface{}{
+					"available": stats["available"],
+					"occupied":  stats["occupied"],
+					"dirty":     stats["dirty"],
+				},
+			},
 		},
 	})
 
@@ -62,11 +68,24 @@ func (tc *TableController) CreateTable(c *gin.Context) {
 // GetAllTables -> menampilkan seluruh meja
 func (tc *TableController) GetAllTables(c *gin.Context) {
 	var tables []models.Table
-	if err := tc.DB.Find(&tables).Error; err != nil {
-		utils.RespondError(c, http.StatusInternalServerError, err)
+
+	result := tc.DB.Find(&tables)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status":  false,
+			"message": result.Error.Error(),
+		})
 		return
 	}
-	utils.RespondJSON(c, http.StatusOK, "List of tables", tables)
+
+	// Debug: log jumlah tables yang ditemukan
+	fmt.Printf("Found %d tables\n", len(tables))
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  true,
+		"message": "List of tables",
+		"data":    tables,
+	})
 }
 
 // UpdateTableStatus -> update status meja
@@ -93,14 +112,11 @@ func (tc *TableController) UpdateTableStatus(c *gin.Context) {
 		return
 	}
 
-	// Broadcast dengan data lengkap
-	stats := tc.getDashboardStats()
+	// Broadcast dengan data lengkap dashboard
+	dashboardData := tc.getDashboardData()
 	kds.BroadcastMessage(kds.Message{
 		Event: kds.EventTableUpdate,
-		Data: map[string]interface{}{
-			"table": table,
-			"stats": stats,
-		},
+		Data:  dashboardData,
 	})
 
 	utils.InfoLogger.Printf("Table %d status changed to %s", table.ID, table.Status)
@@ -110,31 +126,35 @@ func (tc *TableController) UpdateTableStatus(c *gin.Context) {
 // DeleteTable -> menghapus meja
 func (tc *TableController) DeleteTable(c *gin.Context) {
 	tableID := c.Param("table_id")
-	var table models.Table
 
+	// Get table data before deletion
+	var table models.Table
 	if err := tc.DB.First(&table, tableID).Error; err != nil {
 		utils.RespondError(c, http.StatusNotFound, err)
 		return
 	}
 
+	// Delete the table
 	if err := tc.DB.Delete(&table).Error; err != nil {
 		utils.RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	// Broadcast dengan data lengkap
-	stats := tc.getDashboardStats()
+	// Get updated dashboard data
+	dashboardData := tc.getDashboardData()
+
+	// Broadcast delete event with complete data
 	kds.BroadcastMessage(kds.Message{
-		Event: kds.EventTableDelete,
+		Event: "table_delete",
 		Data: map[string]interface{}{
-			"table_id": table.ID,
-			"stats":    stats,
+			"table":     table,
+			"dashboard": dashboardData,
 		},
 	})
 
-	utils.InfoLogger.Printf("Table %d deleted", table.ID)
 	utils.RespondJSON(c, http.StatusOK, "Table deleted", gin.H{
-		"id": table.ID,
+		"table_id": tableID,
+		"message":  "Table deleted successfully",
 	})
 }
 
@@ -206,5 +226,50 @@ func (tc *TableController) getDashboardStats() map[string]interface{} {
 		"occupied":  occupiedCount,
 		"dirty":     dirtyCount,
 		"total":     availableCount + occupiedCount + dirtyCount,
+	}
+}
+
+// getDashboardData mengambil semua data yang diperlukan dashboard
+func (tc *TableController) getDashboardData() map[string]interface{} {
+	// Stats meja
+	tableStats := tc.getDashboardStats()
+
+	// Ambil order stats
+	var orderStats struct {
+		PendingPayment int64
+		Paid           int64
+		InProgress     int64
+		Ready          int64
+		Completed      int64
+	}
+
+	tc.DB.Model(&models.Order{}).Where("status = ?", "pending_payment").Count(&orderStats.PendingPayment)
+	tc.DB.Model(&models.Order{}).Where("status = ?", "paid").Count(&orderStats.Paid)
+	tc.DB.Model(&models.Order{}).Where("status = ?", "in_progress").Count(&orderStats.InProgress)
+	tc.DB.Model(&models.Order{}).Where("status = ?", "ready").Count(&orderStats.Ready)
+	tc.DB.Model(&models.Order{}).Where("status = ?", "completed").Count(&orderStats.Completed)
+
+	// Ambil recent orders
+	var recentOrders []models.Order
+	tc.DB.Preload("OrderItems.Menu").
+		Preload("Customer.Table").
+		Order("created_at desc").
+		Limit(10).
+		Find(&recentOrders)
+
+	return map[string]interface{}{
+		"stats": map[string]interface{}{
+			"table_stats": tableStats,
+			"order_stats": map[string]interface{}{
+				"pending_payment": orderStats.PendingPayment,
+				"paid":            orderStats.Paid,
+				"in_progress":     orderStats.InProgress,
+				"ready":           orderStats.Ready,
+				"completed":       orderStats.Completed,
+			},
+		},
+		"order_flow": map[string]interface{}{
+			"recent_orders": recentOrders,
+		},
 	}
 }

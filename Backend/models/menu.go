@@ -1,16 +1,53 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+
+	"gorm.io/gorm"
+)
 
 type Menu struct {
-	ID          uint         `gorm:"primaryKey"`
-	CategoryID  uint         `gorm:"not null"`
-	Category    MenuCategory `gorm:"foreignKey:CategoryID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT"`
-	Name        string       `gorm:"type:varchar(255); not null"`
-	Price       float64      `gorm:"type:decimal(10,2); not null"`
-	Stock       int
-	Description string    `gorm:"type:text"`
-	ImageUrl    *string   `gorm:"type:varchar(255); not null"`
-	CreatedAt   time.Time `gorm:"not null"`
-	UpdatedAt   time.Time `gorm:"not null"`
+	gorm.Model
+	CategoryID  uint         `json:"category_id"`
+	Category    MenuCategory `json:"category"`
+	Name        string       `json:"name"`
+	Price       float64      `json:"price"`
+	Stock       int          `json:"stock"`
+	Description string       `json:"description"`
+	ImageUrls   string       `json:"image_urls" gorm:"type:text"`
+}
+
+// BeforeCreate - Hook untuk mengatur nilai default sebelum create
+func (m *Menu) BeforeCreate(tx *gorm.DB) error {
+	if m.ImageUrls == "" {
+		m.ImageUrls = "[]"
+	}
+	return nil
+}
+
+// BeforeSave - Hook untuk memastikan ImageUrls tidak pernah NULL
+func (m *Menu) BeforeSave(tx *gorm.DB) error {
+	if m.ImageUrls == "" {
+		m.ImageUrls = "[]"
+	}
+	return nil
+}
+
+// Getter untuk ImageUrls
+func (m *Menu) GetImageUrls() []string {
+	var urls []string
+	if m.ImageUrls != "" {
+		json.Unmarshal([]byte(m.ImageUrls), &urls)
+	}
+	return urls
+}
+
+// Setter untuk ImageUrls
+func (m *Menu) SetImageUrls(urls []string) error {
+	jsonData, err := json.Marshal(urls)
+	if err != nil {
+		return err
+	}
+	m.ImageUrls = string(jsonData)
+	return nil
 }

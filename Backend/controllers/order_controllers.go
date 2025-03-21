@@ -24,105 +24,189 @@ func NewOrderController(db *gorm.DB) *OrderController {
 	return &OrderController{DB: db}
 }
 
-// GetAllOrders -> list orders beserta items
+// GetAllOrders mengembalikan semua orders
 func (oc *OrderController) GetAllOrders(c *gin.Context) {
 	var orders []models.Order
-	if err := oc.DB.Preload("OrderItems").Find(&orders).Error; err != nil {
-		utils.RespondError(c, http.StatusInternalServerError, err)
+
+	result := oc.DB.
+		Preload("Customer").
+		Preload("Chef").
+		Preload("Table").
+		Preload("OrderItems").
+		Preload("OrderItems.Menu").
+		Find(&orders)
+
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status":  false,
+			"message": result.Error.Error(),
+		})
 		return
 	}
-	utils.RespondJSON(c, http.StatusOK, "List of orders", orders)
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  true,
+		"message": "Orders retrieved successfully",
+		"data":    orders,
+	})
 }
 
-// CreateOrder -> buat order (status='pending_payment')
+// CreateOrder -> buat order baru
 func (oc *OrderController) CreateOrder(c *gin.Context) {
-	tableID := c.Param("table_id")
+	var req struct {
+		TableID     uint    `json:"table_id" binding:"required"`
+		CustomerID  uint    `json:"customer_id" binding:"required"`
+		SessionKey  string  `json:"session_key" binding:"required"`
+		Status      string  `json:"status"`
+		TotalAmount float64 `json:"total_amount"`
+		Items       []struct {
+			MenuID   uint    `json:"menu_id" binding:"required"`
+			Quantity int     `json:"quantity" binding:"required,min=1"`
+			Price    float64 `json:"price"`
+			Notes    string  `json:"notes"`
+			Status   string  `json:"status"`
+		} `json:"Items" binding:"required,min=1"`
+	}
 
-	// Cek sesi customer Aktif
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	// Cek customer
 	var customer models.Customer
-	if err := oc.DB.Where("table_id = ? AND status = ?", tableID, "active").First(&customer).Error; err != nil {
-		utils.RespondError(c, http.StatusNotFound, fmt.Errorf("tidak ada sesi aktif di meja ini"))
+	if err := oc.DB.First(&customer, req.CustomerID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"status":  false,
+			"message": "Customer not found",
+		})
 		return
 	}
 
-	type ItemReq struct {
-		MenuID       uint   `json:"menu_id"`
-		Quantity     int    `json:"quantity"`
-		Notes        string `json:"notes"`
-		ParentItemID *uint  `json:"parent_item_id,omitempty"` // untuk add-on
-	}
-
-	type ReqBody struct {
-		Items []ItemReq `json:"items" binding:"required"`
-	}
-
-	var body ReqBody
-	if err := c.ShouldBindJSON(&body); err != nil {
-		utils.RespondError(c, http.StatusBadRequest, err)
+	// Validasi session key
+	if customer.SessionKey == nil || *customer.SessionKey != req.SessionKey {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  false,
+			"message": "Invalid session key",
+		})
 		return
 	}
 
-	// Buat order dengan status pending_payment
+	// Cek table
+	var table models.Table
+	if err := oc.DB.First(&table, req.TableID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"status":  false,
+			"message": "Table not found",
+		})
+		return
+	}
+
+	// Buat order baru
 	order := models.Order{
-		CustomerID:  customer.ID,
+		TableID:     req.TableID,
+		CustomerID:  req.CustomerID,
 		Status:      "pending_payment",
-		TotalAmount: 0,
+		TotalAmount: req.TotalAmount,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
 
-	if err := oc.DB.Create(&order).Error; err != nil {
-		utils.RespondError(c, http.StatusInternalServerError, err)
+	tx := oc.DB.Begin()
+
+	if err := tx.Create(&order).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"status":  false,
+			"message": err.Error(),
+		})
 		return
 	}
 
-	var total float64
-	// Loop item
-	for _, item := range body.Items {
-		// Ambil menu untuk harga
+	// Proses items
+	for _, item := range req.Items {
 		var menu models.Menu
-		if err := oc.DB.First(&menu, item.MenuID).Error; err != nil {
-			// skip jika tak ketemu
-			continue
+		if err := tx.First(&menu, item.MenuID).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusNotFound, gin.H{
+				"status":  false,
+				"message": fmt.Sprintf("Menu ID %d not found", item.MenuID),
+			})
+			return
 		}
-		subTotal := float64(item.Quantity) * menu.Price
-		total += subTotal
 
 		orderItem := models.OrderItem{
-			OrderID:      order.ID,
-			MenuID:       menu.ID,
-			Quantity:     item.Quantity,
-			Price:        menu.Price,
-			Notes:        item.Notes,
-			ParentItemID: item.ParentItemID, // untuk add-on
-			Status:       "pending",
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			OrderID:   order.ID,
+			MenuID:    menu.ID,
+			Quantity:  item.Quantity,
+			Price:     item.Price,
+			Notes:     item.Notes,
+			Status:    "pending",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
 		}
-		oc.DB.Create(&orderItem)
+
+		if err := tx.Create(&orderItem).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  false,
+				"message": err.Error(),
+			})
+			return
+		}
 	}
 
-	// Update total
-	order.TotalAmount = total
-	oc.DB.Save(&order)
+	tx.Commit()
 
-	utils.RespondJSON(c, http.StatusCreated, "Order created", order)
+	// Broadcast update
+	kds.BroadcastOrderUpdate(order)
+
+	c.JSON(http.StatusCreated, gin.H{
+		"status":  true,
+		"message": "Order created successfully",
+		"data":    order,
+	})
 }
 
 // GetOrderByID -> detail 1 order
 func (oc *OrderController) GetOrderByID(c *gin.Context) {
 	idStr := c.Param("order_id")
-	id, _ := strconv.Atoi(idStr)
-
-	var order models.Order
-	fmt.Printf("Order %d has %d items\n", order.ID, len(order.OrderItems))
-	// preload items
-	if err := oc.DB.Preload("OrderItems").First(&order, id).Error; err != nil {
-		utils.RespondError(c, http.StatusNotFound, err)
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"status":  false,
+			"message": "Invalid order ID",
+		})
 		return
 	}
 
-	utils.RespondJSON(c, http.StatusOK, "Order detail", order)
+	var order models.Order
+	result := oc.DB.Preload("Customer").
+		Preload("Chef").
+		Preload("Table").
+		Preload("OrderItems").
+		Preload("OrderItems.Menu").
+		First(&order, id)
+
+	if result.Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"status":  false,
+			"message": "Order not found",
+		})
+		return
+	}
+
+	// Log untuk debugging
+	utils.InfoLogger.Printf("Retrieved order #%d with %d items", order.ID, len(order.OrderItems))
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  true,
+		"message": "Order detail retrieved successfully",
+		"data":    order,
+	})
 }
 
 // UpdateOrder untuk admin/staff mengupdate order
@@ -193,6 +277,16 @@ func (oc *OrderController) UpdateOrder(c *gin.Context) {
 
 	tx.Commit()
 
+	// Dapatkan data dashboard terbaru
+	tableCtrl := &TableController{DB: oc.DB}
+	dashboardData := tableCtrl.getDashboardData()
+
+	// Broadcast update
+	kds.BroadcastMessage(kds.Message{
+		Event: kds.EventOrderUpdate,
+		Data:  dashboardData,
+	})
+
 	// Broadcast updates
 	kds.BroadcastOrderUpdate(order)
 	kds.BroadcastStaffNotification(fmt.Sprintf("Order #%d updated by %s", order.ID, roleInterface))
@@ -230,7 +324,7 @@ func (oc *OrderController) StartCookingItem(c *gin.Context) {
 	}
 
 	if item.Status != "pending" {
-		utils.RespondError(c, http.StatusBadRequest, fmt.Errorf("Item not in pending status"))
+		utils.RespondError(c, http.StatusBadRequest, fmt.Errorf("item not in pending status"))
 		return
 	}
 
@@ -253,7 +347,7 @@ func (oc *OrderController) FinishCookingItem(c *gin.Context) {
 	}
 
 	if item.Status != "in_progress" {
-		utils.RespondError(c, http.StatusBadRequest, fmt.Errorf("Item not in in_progress status"))
+		utils.RespondError(c, http.StatusBadRequest, fmt.Errorf("item not in in_progress status"))
 		return
 	}
 
@@ -350,7 +444,7 @@ func (oc *OrderController) CompleteOrder(c *gin.Context) {
 
 	// Pastikan status='ready'
 	if order.Status != "ready" {
-		utils.RespondError(c, http.StatusBadRequest, fmt.Errorf("Order not in ready status"))
+		utils.RespondError(c, http.StatusBadRequest, fmt.Errorf("order not in ready status"))
 		return
 	}
 
