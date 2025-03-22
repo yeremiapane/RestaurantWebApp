@@ -317,8 +317,15 @@ func (oc *OrderController) DeleteOrder(c *gin.Context) {
 func (oc *OrderController) StartCookingItem(c *gin.Context) {
 	itemID := c.Param("item_id")
 
+	// Dapatkan ID chef yang sedang login
+	userID, exists := c.Get("user_id")
+	if !exists {
+		utils.RespondError(c, http.StatusUnauthorized, fmt.Errorf("unauthorized"))
+		return
+	}
+
 	var item models.OrderItem
-	if err := oc.DB.First(&item, itemID).Error; err != nil {
+	if err := oc.DB.Preload("Order").First(&item, itemID).Error; err != nil {
 		utils.RespondError(c, http.StatusNotFound, err)
 		return
 	}
@@ -328,11 +335,65 @@ func (oc *OrderController) StartCookingItem(c *gin.Context) {
 		return
 	}
 
+	// Cek apakah order sudah ditangani chef lain
+	if item.Order.ChefID != nil && *item.Order.ChefID != userID.(uint) {
+		chefName := "another chef"
+		var chef models.User
+		if err := oc.DB.First(&chef, *item.Order.ChefID); err == nil {
+			chefName = chef.Name
+		}
+		utils.RespondError(c, http.StatusBadRequest, fmt.Errorf("order is already being handled by %s", chefName))
+		return
+	}
+
+	tx := oc.DB.Begin()
+
+	// Update item status
 	item.Status = "in_progress"
 	item.UpdatedAt = time.Now()
-	oc.DB.Save(&item)
+	if err := tx.Save(&item).Error; err != nil {
+		tx.Rollback()
+		utils.RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
 
-	utils.RespondJSON(c, http.StatusOK, "Item in_progress", item)
+	// Jika order dalam status "paid", update ke "in_progress" tanpa mengubah status item lain
+	if item.Order.Status == "paid" {
+		var order models.Order
+		if err := tx.First(&order, item.OrderID).Error; err != nil {
+			tx.Rollback()
+			utils.RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+
+		now := time.Now()
+		order.Status = "in_progress"
+		order.StartCookingTime = &now
+		order.UpdatedAt = now
+
+		// Tetapkan chef_id jika belum diatur
+		userIDUint := userID.(uint)
+		if order.ChefID == nil {
+			order.ChefID = &userIDUint
+		}
+
+		if err := tx.Save(&order).Error; err != nil {
+			tx.Rollback()
+			utils.RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+
+		// Broadcast update status order
+		kds.BroadcastOrderUpdate(order)
+	}
+
+	tx.Commit()
+
+	// Reload item dengan relasi
+	var updatedItem models.OrderItem
+	oc.DB.Preload("Order").Preload("Menu").First(&updatedItem, itemID)
+
+	utils.RespondJSON(c, http.StatusOK, "Item in_progress", updatedItem)
 }
 
 // FinishCookingItem -> Chef menandai 1 item => "ready".
@@ -341,7 +402,7 @@ func (oc *OrderController) FinishCookingItem(c *gin.Context) {
 	itemID := c.Param("item_id")
 
 	var item models.OrderItem
-	if err := oc.DB.First(&item, itemID).Error; err != nil {
+	if err := oc.DB.Preload("Order").First(&item, itemID).Error; err != nil {
 		utils.RespondError(c, http.StatusNotFound, err)
 		return
 	}
@@ -351,40 +412,74 @@ func (oc *OrderController) FinishCookingItem(c *gin.Context) {
 		return
 	}
 
+	tx := oc.DB.Begin()
+
+	// Update item status
 	item.Status = "ready"
 	item.UpdatedAt = time.Now()
-	oc.DB.Save(&item)
+	if err := tx.Save(&item).Error; err != nil {
+		tx.Rollback()
+		utils.RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
 
 	// Cek apakah semua item di order ini => "ready"
 	var countNotReady int64
-	oc.DB.Model(&models.OrderItem{}).
+	if err := tx.Model(&models.OrderItem{}).
 		Where("order_id = ? AND status != ?", item.OrderID, "ready").
-		Count(&countNotReady)
+		Count(&countNotReady).Error; err != nil {
+		tx.Rollback()
+		utils.RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
 
 	if countNotReady == 0 {
 		var order models.Order
-		if err := oc.DB.First(&order, item.OrderID).Error; err == nil {
-			order.Status = "ready"
-			now := time.Now()
-			order.FinishCookingTime = &now
-			oc.DB.Save(&order)
-
-			// Broadcast ke semua
-			kds.BroadcastOrderUpdate(order)
-			// Notifikasi khusus staff
-			kds.BroadcastStaffNotification(fmt.Sprintf("Order #%d siap disajikan", order.ID))
+		if err := tx.First(&order, item.OrderID).Error; err != nil {
+			tx.Rollback()
+			utils.RespondError(c, http.StatusInternalServerError, err)
+			return
 		}
+
+		now := time.Now()
+		order.Status = "ready"
+		order.FinishCookingTime = &now
+		order.UpdatedAt = now
+
+		if err := tx.Save(&order).Error; err != nil {
+			tx.Rollback()
+			utils.RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+
+		// Broadcast ke semua
+		kds.BroadcastOrderUpdate(order)
+		// Notifikasi khusus staff
+		kds.BroadcastStaffNotification(fmt.Sprintf("Order #%d siap disajikan", order.ID))
 	}
 
-	utils.RespondJSON(c, http.StatusOK, "Item finished", item)
+	tx.Commit()
+
+	// Reload item dengan relasi
+	var updatedItem models.OrderItem
+	oc.DB.Preload("Order").Preload("Menu").First(&updatedItem, itemID)
+
+	utils.RespondJSON(c, http.StatusOK, "Item finished", updatedItem)
 }
 
 // StartCooking -> Chef menandai entire order => "in_progress" (opsional)
 func (oc *OrderController) StartCooking(c *gin.Context) {
 	orderID := c.Param("order_id")
 
+	// Dapatkan ID chef yang sedang login
+	userID, exists := c.Get("user_id")
+	if !exists {
+		utils.RespondError(c, http.StatusUnauthorized, fmt.Errorf("unauthorized"))
+		return
+	}
+
 	var order models.Order
-	if err := oc.DB.First(&order, orderID).Error; err != nil {
+	if err := oc.DB.Preload("OrderItems").First(&order, orderID).Error; err != nil {
 		utils.RespondError(c, http.StatusNotFound, err)
 		return
 	}
@@ -395,13 +490,54 @@ func (oc *OrderController) StartCooking(c *gin.Context) {
 		return
 	}
 
+	// Cek apakah order sudah ditangani chef lain
+	if order.ChefID != nil && *order.ChefID != userID.(uint) {
+		chefName := "another chef"
+		var chef models.User
+		if err := oc.DB.First(&chef, *order.ChefID); err == nil {
+			chefName = chef.Name
+		}
+		utils.RespondError(c, http.StatusBadRequest, fmt.Errorf("order is already being handled by %s", chefName))
+		return
+	}
+
+	tx := oc.DB.Begin()
+
+	// Update order status
 	now := time.Now()
 	order.Status = "in_progress"
 	order.StartCookingTime = &now
+	order.UpdatedAt = now
 
-	oc.DB.Save(&order)
+	// Tetapkan chef_id
+	userIDUint := userID.(uint)
+	order.ChefID = &userIDUint
 
-	// broadcast
+	if err := tx.Save(&order).Error; err != nil {
+		tx.Rollback()
+		utils.RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	// Update semua item yang masih pending menjadi in_progress
+	for _, item := range order.OrderItems {
+		if item.Status == "pending" {
+			item.Status = "in_progress"
+			item.UpdatedAt = now
+			if err := tx.Save(&item).Error; err != nil {
+				tx.Rollback()
+				utils.RespondError(c, http.StatusInternalServerError, err)
+				return
+			}
+		}
+	}
+
+	tx.Commit()
+
+	// Reload order with relationships
+	oc.DB.Preload("OrderItems").Preload("OrderItems.Menu").Preload("Customer").Preload("Table").Preload("Chef").First(&order, orderID)
+
+	// Broadcast
 	kds.BroadcastOrderUpdate(order)
 
 	utils.RespondJSON(c, http.StatusOK, "Order in progress", order)
@@ -488,11 +624,28 @@ func (oc *OrderController) GetKitchenDisplay(c *gin.Context) {
 	var orders []models.Order
 	if err := oc.DB.Preload("OrderItems").
 		Preload("OrderItems.Menu").
+		Preload("Customer").
+		Preload("Table").
+		Preload("Chef").
 		Where("status IN ?", []string{"paid", "in_progress", "ready"}).
 		Order("created_at asc").
 		Find(&orders).Error; err != nil {
 		utils.RespondError(c, http.StatusInternalServerError, err)
 		return
+	}
+
+	// Hanya sinkronisasi item status dengan order status jika diperlukan untuk pesanan 'ready'
+	for i := range orders {
+		// Update status item untuk order dengan status 'ready' tapi item masih 'pending'
+		if orders[i].Status == "ready" {
+			for j := range orders[i].OrderItems {
+				if orders[i].OrderItems[j].Status != "ready" {
+					// Update item status ke ready
+					orders[i].OrderItems[j].Status = "ready"
+					oc.DB.Save(&orders[i].OrderItems[j])
+				}
+			}
+		}
 	}
 
 	utils.RespondJSON(c, http.StatusOK, "Kitchen display orders", orders)
