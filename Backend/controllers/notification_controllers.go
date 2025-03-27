@@ -42,7 +42,7 @@ func (nc *NotificationController) CreateNotification(c *gin.Context) {
 	}
 
 	notif := models.Notification{
-		Title:   &body.Title,
+		Title:   body.Title,
 		Message: body.Message,
 	}
 	if body.UserID != nil {

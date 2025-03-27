@@ -126,10 +126,19 @@ func (rc *ReceiptController) GenerateReceipt(c *gin.Context) {
 		TableNumber string    `json:"table_number"`
 		Cashier     string    `json:"cashier"`
 	}{
-		Number:      receipt.ReceiptNumber,
-		DateTime:    receipt.CreatedAt,
-		TableNumber: payment.Order.Customer.Table.TableNumber,
-		Cashier:     "Cashier Name", // Bisa diambil dari context user yang login
+		Number:   receipt.ReceiptNumber,
+		DateTime: receipt.CreatedAt,
+		TableNumber: func() string {
+			if payment.Order.TableID > 0 {
+				var table models.Table
+				err := rc.DB.First(&table, payment.Order.TableID).Error
+				if err == nil {
+					return table.TableNumber
+				}
+			}
+			return "N/A"
+		}(),
+		Cashier: "Cashier Name", // Bisa diambil dari context user yang login
 	}
 
 	// Hitung detail harga
@@ -212,13 +221,13 @@ func (rc *ReceiptController) GenerateReceipt(c *gin.Context) {
 		Status     string  `json:"status"`
 		References string  `json:"references,omitempty"`
 	}{
-		Method: payment.PaymentMethod,
+		Method: payment.PaymentType,
 		Amount: payment.Amount,
 		Change: change,
 		Time:   payment.PaymentTime.Format("15:04:05"),
 		Status: payment.Status,
 		References: func() string {
-			if payment.PaymentMethod == "qris" {
+			if payment.PaymentType == "qris" {
 				return "QRIS REF: xxx"
 			}
 			return ""

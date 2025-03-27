@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -28,6 +29,8 @@ func NewOrderController(db *gorm.DB) *OrderController {
 func (oc *OrderController) GetAllOrders(c *gin.Context) {
 	var orders []models.Order
 
+	log.Printf("Requesting all orders")
+
 	result := oc.DB.
 		Preload("Customer").
 		Preload("Chef").
@@ -37,11 +40,22 @@ func (oc *OrderController) GetAllOrders(c *gin.Context) {
 		Find(&orders)
 
 	if result.Error != nil {
+		log.Printf("Error retrieving orders: %v", result.Error)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status":  false,
 			"message": result.Error.Error(),
 		})
 		return
+	}
+
+	log.Printf("Successfully retrieved %d orders", len(orders))
+
+	// Log some details about the first few orders for debugging
+	for i, order := range orders {
+		if i < 3 { // Just log details for first 3 orders to avoid log flooding
+			log.Printf("Order #%d: ID=%d, Status=%s, TableID=%d, Items=%d",
+				i+1, order.ID, order.Status, order.TableID, len(order.OrderItems))
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -245,6 +259,17 @@ func (oc *OrderController) UpdateOrder(c *gin.Context) {
 
 	// Update order status if provided
 	if req.Status != nil {
+		// Validasi perubahan status
+		if *req.Status == "paid" {
+			// Cek apakah sudah ada pembayaran yang berhasil
+			var payment models.Payment
+			if err := tx.Where("order_id = ? AND status = ?", order.ID, "success").First(&payment).Error; err != nil {
+				tx.Rollback()
+				utils.RespondError(c, http.StatusBadRequest, fmt.Errorf("cannot set status to paid without successful payment"))
+				return
+			}
+		}
+
 		order.Status = *req.Status
 		if err := tx.Save(&order).Error; err != nil {
 			tx.Rollback()

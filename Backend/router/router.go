@@ -1,7 +1,10 @@
 package router
 
 import (
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -13,8 +16,50 @@ import (
 func SetupRouter(db *gorm.DB) *gin.Engine {
 	r := gin.Default()
 
+	// Get current working directory
+	workDir, _ := os.Getwd()
+
+	// Debug the working directory
+	fmt.Println("Current working directory:", workDir)
+
+	// Handle static files with absolute paths
+	frontendPath := filepath.Join(workDir, "..", "Frontend")
+
+	// Check if Frontend directory exists
+	if _, err := os.Stat(frontendPath); os.IsNotExist(err) {
+		// Try with current directory if parent directory doesn't have Frontend
+		frontendPath = filepath.Join(workDir, "Frontend")
+		fmt.Println("Using local Frontend path:", frontendPath)
+	} else {
+		fmt.Println("Using parent Frontend path:", frontendPath)
+	}
+
+	// Check if path exists
+	if _, err := os.Stat(frontendPath); os.IsNotExist(err) {
+		fmt.Println("WARNING: Frontend path not found:", frontendPath)
+	} else {
+		fmt.Println("Frontend path exists:", frontendPath)
+		// List files in the frontend directory to debug
+		if files, err := os.ReadDir(frontendPath); err == nil {
+			fmt.Println("Files in Frontend directory:")
+			for _, f := range files {
+				fmt.Println(" -", f.Name())
+			}
+		}
+	}
+
+	// Serve static files
+	r.Static("/Frontend", frontendPath)
+
 	// Middleware untuk membatasi akses ke direktori uploads
-	r.Static("/uploads", "./public/uploads")
+	uploadsPath := filepath.Join(workDir, "public", "uploads")
+	r.Static("/uploads", uploadsPath)
+
+	// Root path handler - redirect to login page
+	r.GET("/", func(c *gin.Context) {
+		c.Redirect(http.StatusMovedPermanently, "/Frontend/auth/login/index.html")
+	})
+
 	r.Use(func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/uploads/") {
 			// Hanya izinkan akses ke file gambar
@@ -42,7 +87,6 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	categoryCtrl := controllers.NewMenuCategoryController(db)
 	menuCtrl := controllers.NewMenuController(db)
 	orderCtrl := controllers.NewOrderController(db)
-	paymentCtrl := controllers.NewPaymentController(db)
 	cleanLogCtrl := controllers.NewCleaningLogController(db)
 	notificationCtrl := controllers.NewNotificationController(db)
 	adminCtrl := controllers.NewAdminController(db)
@@ -82,12 +126,14 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	r.GET("/orders/:order_id", orderCtrl.GetOrderByID)
 
 	// Membayar (mis. cash/QRIS) tanpa login (sesuai kebutuhan)
-	r.POST("/payments", paymentCtrl.CreatePayment)
+	r.POST("/payments", controllers.CreatePayment)
+	r.POST("/payments/callback", controllers.HandlePaymentCallback)
 
 	// Public routes untuk customer
 	r.GET("/tables/:table_id/scan", customerCtrl.ScanTable)           // Scan QR
 	r.GET("/tables/:table_id/session", customerCtrl.GetActiveSession) // Cek sesi aktif
-	// r.POST("/tables/:table_id/orders", orderCtrl.CreateOrderFromTable) // Buat order dari meja
+	r.GET("/tables", tableCtrl.GetAllTables)                          // Get all tables
+	r.GET("/customers", customerCtrl.GetAllCustomers)                 // Get all customers
 
 	// ----------------------------------------------------------------
 	//                      AUTHENTICATED ROUTES
@@ -116,6 +162,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	auth.DELETE("/categories/:cat_id", categoryCtrl.DeleteCategory)
 
 	// MENUS (staff/admin)
+	auth.GET("/menus", menuCtrl.GetAllMenus) // Get all menus
 	auth.POST("/menus", menuCtrl.CreateMenu)
 	auth.GET("/menus/:menu_id", menuCtrl.GetMenuByID) // detail 1 menu
 	auth.PATCH("/menus/:menu_id", menuCtrl.UpdateMenu)
@@ -129,10 +176,14 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	auth.DELETE("/orders/:order_id", orderCtrl.DeleteOrder)
 
 	// PAYMENTS (staff/admin)
-	auth.GET("/payments", paymentCtrl.GetAllPayments)
-	auth.GET("/payments/:payment_id", paymentCtrl.GetPaymentByID)
-	auth.DELETE("/payments/:payment_id", paymentCtrl.DeletePayment)
-	auth.POST("/payments/:payment_id/verify", paymentCtrl.VerifyPayment)
+	auth.GET("/payments", controllers.GetPayments)
+	auth.POST("/payments", controllers.CreatePayment)
+	auth.GET("/payments/:payment_id", controllers.GetPayment)
+	auth.DELETE("/payments/:payment_id", controllers.DeletePayment)
+	auth.POST("/payments/:payment_id/verify", controllers.VerifyPayment)
+	auth.GET("/payments/:payment_id/check", controllers.CheckPaymentStatus)
+	auth.GET("/orders/:order_id/check-payment", controllers.CheckOrderPaymentStatus)
+	auth.GET("/payments/config", controllers.GetMidtransConfig)
 
 	// Routes untuk receipt dengan middleware logger
 	receiptGroup := auth.Group("/payments")

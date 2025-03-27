@@ -10,7 +10,10 @@ func SecurityHeaders() gin.HandlerFunc {
 		c.Header("X-Frame-Options", "DENY")
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-XSS-Protection", "1; mode=block")
-		c.Header("Content-Security-Policy", "default-src 'self'")
+
+		// Izinkan operasi WebSocket dan permintaan dari ngrok
+		c.Header("Content-Security-Policy", "default-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.ngrok-free.app; img-src 'self' data: https:; connect-src 'self' https://*.ngrok-free.app wss://*.ngrok-free.app; frame-ancestors 'self' https://*.ngrok-free.app;")
+
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 		c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 

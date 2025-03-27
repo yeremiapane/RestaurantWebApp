@@ -1,6 +1,7 @@
 package models
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -19,4 +20,19 @@ type Order struct {
 	OrderItems        []OrderItem `gorm:"foreignKey:OrderID" json:"order_items"`
 	TableID           uint        `json:"table_id"`
 	Table             Table       `gorm:"foreignKey:TableID" json:"table"`
+}
+
+// GenerateCustomerIdentifier menghasilkan identifier untuk customer berdasarkan ID
+func (o *Order) GenerateCustomerIdentifier() string {
+	return fmt.Sprintf("CUST-%d-%d", o.CustomerID, o.ID)
+}
+
+// GetCustomerEmail menghasilkan email berdasarkan ID customer
+func (o *Order) GetCustomerEmail() string {
+	return fmt.Sprintf("customer%d@example.com", o.CustomerID)
+}
+
+// GetCustomerName menghasilkan nama berdasarkan ID customer
+func (o *Order) GetCustomerName() string {
+	return fmt.Sprintf("Customer-%d", o.CustomerID)
 }

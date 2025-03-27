@@ -34,7 +34,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		log.Printf("Token: %v", tokenString)
 
 		// Validate the token
-		claims, err := utils.ParseToken(tokenString)
+		claims, err := utils.ValidateToken(tokenString)
 		if err != nil {
 			utils.RespondJSON(c, http.StatusUnauthorized, "Invalid token", gin.H{
 				"status": false,
@@ -54,12 +54,17 @@ func AuthMiddleware() gin.HandlerFunc {
 
 func EnhancedAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		utils.InfoLogger.Printf("Request path: %s", c.Request.URL.Path)
+
 		token := c.GetHeader("Authorization")
 		if token == "" {
 			token = c.Query("token")
 		}
 
+		utils.InfoLogger.Printf("Token from request: %s", token)
+
 		if token == "" {
+			utils.ErrorLogger.Printf("No token found in request")
 			utils.RespondError(c, http.StatusUnauthorized, errors.New("token tidak ditemukan"))
 			c.Abort()
 			return
@@ -67,6 +72,7 @@ func EnhancedAuthMiddleware() gin.HandlerFunc {
 
 		// Validasi format token
 		if !strings.HasPrefix(token, "Bearer ") {
+			utils.ErrorLogger.Printf("Invalid token format: %s", token)
 			utils.RespondError(c, http.StatusUnauthorized, errors.New("format token tidak valid"))
 			c.Abort()
 			return
@@ -75,6 +81,7 @@ func EnhancedAuthMiddleware() gin.HandlerFunc {
 		tokenString := strings.TrimPrefix(token, "Bearer ")
 		claims, err := utils.ValidateToken(tokenString)
 		if err != nil {
+			utils.ErrorLogger.Printf("Token validation failed: %v", err)
 			utils.RespondError(c, http.StatusUnauthorized, err)
 			c.Abort()
 			return
@@ -82,6 +89,7 @@ func EnhancedAuthMiddleware() gin.HandlerFunc {
 
 		// Tambahkan validasi tambahan
 		if time.Now().Unix() > claims.ExpiresAt {
+			utils.ErrorLogger.Printf("Token expired for user %d", claims.UserID)
 			utils.RespondError(c, http.StatusUnauthorized, errors.New("token kadaluarsa"))
 			c.Abort()
 			return
@@ -89,11 +97,13 @@ func EnhancedAuthMiddleware() gin.HandlerFunc {
 
 		// Cek apakah token ada di daftar blacklist
 		if utils.IsTokenBlacklisted(tokenString) {
+			utils.ErrorLogger.Printf("Blacklisted token used for user %d", claims.UserID)
 			utils.RespondError(c, http.StatusUnauthorized, errors.New("token tidak valid"))
 			c.Abort()
 			return
 		}
 
+		utils.InfoLogger.Printf("Authenticated user %d with role %s", claims.UserID, claims.Role)
 		c.Set("user_id", claims.UserID)
 		c.Set("role", claims.Role)
 		c.Next()
